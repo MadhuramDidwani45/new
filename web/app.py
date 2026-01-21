@@ -871,9 +871,10 @@ def get_statistics():
 def get_significant_ld_variants():
     """Returns significant variants that passed LD pruning with allele frequencies"""
     conn = get_db_connection()
+    gene_name = request.args.get('gene')
     
     # Get variants that are significant AND kept after LD pruning
-    cursor = conn.execute("""
+    query = """
         SELECT DISTINCT v.variant_id, v.rs_id, v.gene_name, v.chrom, v.position
         FROM variants v
         INNER JOIN ld_status ld ON v.variant_id = ld.variant_id AND ld.ld_pruned = 1
@@ -883,8 +884,15 @@ def get_significant_ld_variants():
         WHERE st.chi_square_p_value <= ?
             AND st.fst_value >= ?
             AND (af_eur.allele_frequency >= ? OR af_pop.allele_frequency >= ?)
-        LIMIT 50
-    """, (BONFERRONI_P_THRESHOLD, FST_THRESHOLD, AF_THRESHOLD, AF_THRESHOLD))
+    """
+    params = [BONFERRONI_P_THRESHOLD, FST_THRESHOLD, AF_THRESHOLD, AF_THRESHOLD]
+    
+    if gene_name:
+        query += " AND v.gene_name = ?"
+        params.append(gene_name)
+    
+    query += " LIMIT 50"
+    cursor = conn.execute(query, params)
     
     variants = []
     variant_ids = []
