@@ -1377,6 +1377,59 @@
                 </div>
             </div>
 
+            <!-- Aggregate Allele Frequency Chart Section -->
+            <div style="margin-bottom: 40px;" id="aggregateChartSection">
+                <h2 style="margin-bottom: 15px;">📊 Aggregate Allele Frequency Distribution</h2>
+
+                <div
+                    style="background: #e7f3ff; border-left: 4px solid #3b82f6; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                    <h3 style="margin: 0 0 10px 0; color: #1e40af;">About This Visualization</h3>
+                    <p style="margin: 0; color: #1e3a5f;">
+                        This chart shows allele frequency distribution across all populations for variants that are
+                        both:
+                    </p>
+                    <ul style="margin: 10px 0 0 20px; color: #1e3a5f;">
+                        <li>✅ <strong>Significant</strong> (meet all 3 criteria: p ≤ 0.01, AF ≥ 0.05, FST ≥ 0.15)</li>
+                        <li>✅ <strong>Kept after LD pruning</strong></li>
+                    </ul>
+                </div>
+
+                <div id="aggregateChartContainer"
+                    style="display: none; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                    <h3 style="text-align: center; margin-bottom: 20px; color: #1e293b;" id="aggregateChartTitle">
+                        Loading variants...
+                    </h3>
+                    <canvas id="aggregateCanvas" style="max-height: 500px;"></canvas>
+
+                    <div id="aggregateVariantCards" style="margin-top: 30px;">
+                        <h3
+                            style="margin-bottom: 15px; padding-bottom: 10px; border-bottom: 2px solid #e5e7eb; color: #1e293b;">
+                            📋 Variants Included
+                        </h3>
+                        <div id="variantCardsGrid"
+                            style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 15px;">
+                        </div>
+                    </div>
+
+                    <div style="text-align: center; margin-top: 20px;">
+                        <button onclick="hideAggregateChart()" class="filter-btn"
+                            style="background: #6b7280; color: white;">
+                            Hide Chart
+                        </button>
+                    </div>
+                </div>
+
+                <div id="aggregateChartButton" style="text-align: center; padding: 30px 0;">
+                    <button onclick="loadAggregateChart()" class="filter-btn"
+                        style="background: linear-gradient(135deg, #3b82f6, #2563eb); color: white; font-size: 1.1em; padding: 15px 30px;">
+                        📊 View Aggregate Distribution Chart
+                    </button>
+                    <p style="margin-top: 10px; color: #6b7280;">
+                        Click to view significant + LD variants
+                    </p>
+                </div>
+            </div>
+
             <h2 style="margin-bottom: 15px;">Gene List</h2>
             <div class="gene-grid" id="geneGrid">
                 <div class="loading" style="grid-column: 1 / -1;">
@@ -2655,6 +2708,112 @@
                 modal.style.display = 'none';
                 document.body.style.overflow = 'auto';
             }
+        }
+
+        // Aggregate Chart Functions
+        let aggregateChart = null;
+        const chartColors = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6', '#1abc9c', '#e67e22', '#34495e'];
+        const populations = ['EUR', 'AFR', 'AMR', 'AMR1', 'AMR2', 'EAS', 'SAS', 'GIH', 'ITU', 'STU', 'PJL', 'BEB'];
+
+        async function loadAggregateChart() {
+            document.getElementById('aggregateChartButton').style.display = 'none';
+            document.getElementById('aggregateChartContainer').style.display = 'block';
+            document.getElementById('aggregateChartTitle').textContent = 'Loading variants...';
+
+            try {
+                const response = await fetch(`${API_BASE}/variants/significant-ld`);
+                const data = await response.json();
+
+                if (data.success && data.data.length > 0) {
+                    const variants = data.data;
+                    document.getElementById('aggregateChartTitle').textContent =
+                        `Allele Frequency Distribution - ${variants.length} Variants`;
+
+                    // Prepare chart data
+                    const chartData = populations.map(pop => {
+                        return variants.reduce((sum, v) => sum + (v.frequencies[pop] || 0), 0) / variants.length;
+                    });
+
+                    // Create datasets for each variant
+                    const datasets = variants.slice(0, 8).map((variant, idx) => ({
+                        label: variant.rs_id,
+                        data: populations.map(pop => variant.frequencies[pop] || 0),
+                        backgroundColor: chartColors[idx % chartColors.length],
+                        borderColor: chartColors[idx % chartColors.length],
+                        borderWidth: 1
+                    }));
+
+                    // Destroy existing chart
+                    if (aggregateChart) {
+                        aggregateChart.destroy();
+                    }
+
+                    // Create new chart
+                    const ctx = document.getElementById('aggregateCanvas').getContext('2d');
+                    aggregateChart = new Chart(ctx, {
+                        type: 'bar',
+                        data: {
+                            labels: populations,
+                            datasets: datasets
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    max: 1,
+                                    title: { display: true, text: 'Allele Frequency' }
+                                },
+                                x: {
+                                    title: { display: true, text: 'Population' }
+                                }
+                            },
+                            plugins: {
+                                legend: { position: 'top' },
+                                tooltip: {
+                                    callbacks: {
+                                        label: function (context) {
+                                            return `${context.dataset.label}: ${context.parsed.y.toFixed(4)}`;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+
+                    // Render variant cards
+                    const cardsHtml = variants.map((v, idx) => `
+                        <div style="background: white; border-radius: 8px; padding: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); border-left: 4px solid ${chartColors[idx % chartColors.length]};">
+                            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+                                <div style="width: 12px; height: 12px; border-radius: 50%; background: ${chartColors[idx % chartColors.length]};"></div>
+                                <strong style="font-size: 1.1em;">${v.rs_id}</strong>
+                            </div>
+                            <div style="font-size: 0.9em; color: #64748b;">
+                                <div><strong>Gene:</strong> ${v.gene_name}</div>
+                                <div><strong>EUR:</strong> ${(v.frequencies.EUR || 0).toFixed(4)}</div>
+                                <div><strong>SAS:</strong> ${(v.frequencies.SAS || 0).toFixed(4)}</div>
+                                <div><strong>AFR:</strong> ${(v.frequencies.AFR || 0).toFixed(4)}</div>
+                                <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #e5e7eb; color: #10b981; font-weight: 600;">
+                                    ✓ Significant + LD
+                                </div>
+                            </div>
+                        </div>
+                    `).join('');
+                    document.getElementById('variantCardsGrid').innerHTML = cardsHtml;
+
+                } else {
+                    document.getElementById('aggregateChartTitle').textContent = 'No significant + LD variants found';
+                }
+            } catch (error) {
+                console.error('Error loading aggregate chart:', error);
+                document.getElementById('aggregateChartTitle').textContent = 'Error loading data';
+            }
+        }
+
+        function hideAggregateChart() {
+            document.getElementById('aggregateChartContainer').style.display = 'none';
+            document.getElementById('aggregateChartButton').style.display = 'block';
         }
 
         loadStatistics();

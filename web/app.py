@@ -57,6 +57,48 @@ def get_db_connection():
     conn.execute("PRAGMA temp_store = MEMORY")
     return conn
 
+
+def create_indexes_if_needed():
+    """Create database indexes to speed up queries (runs once)"""
+    conn = get_db_connection()
+    try:
+        # Check if indexes already exist
+        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_st_variant_pop'")
+        if cursor.fetchone() is None:
+            print("[INFO] Creating database indexes for faster queries...")
+            
+            # Index for statistical_tests
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_st_variant_pop 
+                ON statistical_tests(variant_id, population)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_st_pvalue_fst 
+                ON statistical_tests(chi_square_p_value, fst_value)
+            """)
+            
+            # Index for allele_frequencies
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_af_variant_pop 
+                ON allele_frequencies(variant_id, population)
+            """)
+            
+            # Index for variants
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_variants_gene 
+                ON variants(gene_name)
+            """)
+            
+            conn.commit()
+            print("[OK] Indexes created successfully")
+        else:
+            print("[OK] Database indexes already exist")
+    except Exception as e:
+        print(f"[WARNING] Could not create indexes: {e}")
+    finally:
+        conn.close()
+
+
 def dict_from_row(row):
     """Convert sqlite3.Row to dictionary"""
     return {key: row[key] for key in row.keys()}
@@ -767,31 +809,21 @@ def get_statistics():
     cursor = conn.execute("SELECT COUNT(*) as count FROM variants")
     stats['total_variants'] = cursor.fetchone()['count']
     
-    # Count significant variants using a single optimized query
+    # Count significant variants - OPTIMIZED using JOINs instead of EXISTS
     # A variant is significant if ANY population meets ALL THREE criteria:
-    # 1. p-value <= 0.01
-    # 2. AF >= 0.05 in either EUR or that population
-    # 3. FST >= 0.15
+    # 1. p-value <= 0.01, 2. AF >= 0.05 in either EUR or that population, 3. FST >= 0.15
     cursor = conn.execute("""
-        SELECT COUNT(DISTINCT v.variant_id) as count
-        FROM variants v
-        WHERE EXISTS (
-            SELECT 1
-            FROM statistical_tests st
-            LEFT JOIN allele_frequencies af_eur 
-                ON st.variant_id = af_eur.variant_id 
-                AND af_eur.population = 'EUR'
-            LEFT JOIN allele_frequencies af_pop 
-                ON st.variant_id = af_pop.variant_id 
-                AND af_pop.population = st.population
-            WHERE st.variant_id = v.variant_id
-                AND st.chi_square_p_value <= ?
-                AND st.fst_value >= ?
-                AND (
-                    COALESCE(af_eur.allele_frequency, 0) >= ? 
-                    OR COALESCE(af_pop.allele_frequency, 0) >= ?
-                )
-        )
+        SELECT COUNT(DISTINCT st.variant_id) as count
+        FROM statistical_tests st
+        INNER JOIN allele_frequencies af_eur 
+            ON st.variant_id = af_eur.variant_id 
+            AND af_eur.population = 'EUR'
+        INNER JOIN allele_frequencies af_pop 
+            ON st.variant_id = af_pop.variant_id 
+            AND af_pop.population = st.population
+        WHERE st.chi_square_p_value <= ?
+            AND st.fst_value >= ?
+            AND (af_eur.allele_frequency >= ? OR af_pop.allele_frequency >= ?)
     """, (BONFERRONI_P_THRESHOLD, FST_THRESHOLD, AF_THRESHOLD, AF_THRESHOLD))
     
     stats['significant_variants'] = cursor.fetchone()['count']
@@ -832,6 +864,68 @@ def get_statistics():
         'success': True,
         'data': stats,
         'cached': False
+    })
+
+
+@app.route('/api/variants/significant-ld', methods=['GET'])
+def get_significant_ld_variants():
+    """Returns significant variants that passed LD pruning with allele frequencies"""
+    conn = get_db_connection()
+    
+    # Get variants that are significant AND kept after LD pruning
+    cursor = conn.execute("""
+        SELECT DISTINCT v.variant_id, v.rs_id, v.gene_name, v.chrom, v.position
+        FROM variants v
+        INNER JOIN ld_status ld ON v.variant_id = ld.variant_id AND ld.ld_pruned = 1
+        INNER JOIN statistical_tests st ON v.variant_id = st.variant_id
+        INNER JOIN allele_frequencies af_eur ON v.variant_id = af_eur.variant_id AND af_eur.population = 'EUR'
+        INNER JOIN allele_frequencies af_pop ON v.variant_id = af_pop.variant_id AND af_pop.population = st.population
+        WHERE st.chi_square_p_value <= ?
+            AND st.fst_value >= ?
+            AND (af_eur.allele_frequency >= ? OR af_pop.allele_frequency >= ?)
+        LIMIT 50
+    """, (BONFERRONI_P_THRESHOLD, FST_THRESHOLD, AF_THRESHOLD, AF_THRESHOLD))
+    
+    variants = []
+    variant_ids = []
+    
+    for row in cursor.fetchall():
+        variant_ids.append(row['variant_id'])
+        variants.append({
+            'variant_id': row['variant_id'],
+            'rs_id': row['rs_id'],
+            'gene_name': row['gene_name'],
+            'chrom': row['chrom'],
+            'position': row['position']
+        })
+    
+    # Get allele frequencies for all populations for these variants
+    if variant_ids:
+        placeholders = ','.join(['?' for _ in variant_ids])
+        cursor = conn.execute(f"""
+            SELECT variant_id, population, allele_frequency
+            FROM allele_frequencies
+            WHERE variant_id IN ({placeholders})
+        """, variant_ids)
+        
+        # Build frequency map
+        freq_map = {}
+        for row in cursor.fetchall():
+            vid = row['variant_id']
+            if vid not in freq_map:
+                freq_map[vid] = {}
+            freq_map[vid][row['population']] = row['allele_frequency']
+        
+        # Add frequencies to variants
+        for variant in variants:
+            variant['frequencies'] = freq_map.get(variant['variant_id'], {})
+    
+    conn.close()
+    
+    return jsonify({
+        'success': True,
+        'data': variants,
+        'count': len(variants)
     })
 
 
@@ -880,6 +974,82 @@ if __name__ == '__main__':
     except Exception as e:
         print(f"[ERROR] Database connection failed: {e}")
         exit(1)
+    
+    # Create indexes if they don't exist (speeds up queries dramatically)
+    create_indexes_if_needed()
+    
+    # Pre-warm the statistics cache on startup
+    print("\n[INFO] Pre-warming statistics cache (this may take a few seconds)...")
+    try:
+        warm_start = time.time()
+        conn = get_db_connection()
+        
+        warm_stats = {}
+        
+        # Total genes
+        cursor = conn.execute("SELECT COUNT(DISTINCT gene_name) as count FROM genes")
+        warm_stats['total_genes'] = cursor.fetchone()['count']
+        
+        # Total variants
+        cursor = conn.execute("SELECT COUNT(*) as count FROM variants")
+        warm_stats['total_variants'] = cursor.fetchone()['count']
+        
+        # Count significant variants - OPTIMIZED using JOINs instead of EXISTS
+        # A variant is significant if ANY population meets ALL THREE criteria:
+        # 1. p-value <= 0.01, 2. AF >= 0.05 in either EUR or that population, 3. FST >= 0.15
+        cursor = conn.execute("""
+            SELECT COUNT(DISTINCT st.variant_id) as count
+            FROM statistical_tests st
+            INNER JOIN allele_frequencies af_eur 
+                ON st.variant_id = af_eur.variant_id 
+                AND af_eur.population = 'EUR'
+            INNER JOIN allele_frequencies af_pop 
+                ON st.variant_id = af_pop.variant_id 
+                AND af_pop.population = st.population
+            WHERE st.chi_square_p_value <= ?
+                AND st.fst_value >= ?
+                AND (af_eur.allele_frequency >= ? OR af_pop.allele_frequency >= ?)
+        """, (BONFERRONI_P_THRESHOLD, FST_THRESHOLD, AF_THRESHOLD, AF_THRESHOLD))
+        warm_stats['significant_variants'] = cursor.fetchone()['count']
+        
+        # Variants per gene distribution
+        cursor = conn.execute("""
+            SELECT 
+                MIN(variant_count) as min_variants,
+                MAX(variant_count) as max_variants,
+                AVG(variant_count) as avg_variants
+            FROM (
+                SELECT gene_name, COUNT(*) as variant_count
+                FROM variants
+                GROUP BY gene_name
+            )
+        """)
+        dist = cursor.fetchone()
+        warm_stats['variants_per_gene'] = {
+            'min': dist['min_variants'],
+            'max': dist['max_variants'],
+            'avg': round(dist['avg_variants'], 2)
+        }
+        
+        warm_stats['significance_criteria'] = {
+            'p_threshold': BONFERRONI_P_THRESHOLD,
+            'af_threshold': AF_THRESHOLD,
+            'fst_threshold': FST_THRESHOLD,
+            'description': 'p <= 0.01 (Bonferroni) AND AF >= 0.05 (either pop) AND FST >= 0.15'
+        }
+        
+        conn.close()
+        
+        # Store in cache - update module level variables using globals()
+        globals()['_stats_cache'] = warm_stats
+        globals()['_stats_cache_time'] = time.time()
+        
+        warm_duration = time.time() - warm_start
+        print(f"[OK] Cache warmed in {warm_duration:.1f} seconds")
+        print(f"  - Significant variants: {warm_stats['significant_variants']}")
+    except Exception as e:
+        print(f"[WARNING] Cache warm-up failed: {e}")
+        print("  Statistics will be calculated on first request")
     
     print("\nStarting Flask server...")
     print("API available at: http://localhost:5000")
