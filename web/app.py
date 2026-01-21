@@ -14,6 +14,8 @@ import os
 import re
 import numpy as np
 from scipy import stats
+from datetime import datetime
+import time
 
 app = Flask(__name__)
 CORS(app)
@@ -22,6 +24,11 @@ CORS(app)
 BONFERRONI_P_THRESHOLD = 0.01
 AF_THRESHOLD = 0.05
 FST_THRESHOLD = 0.15
+
+# Cache for statistics (to avoid expensive queries)
+_stats_cache = None
+_stats_cache_time = None
+CACHE_DURATION = 3600  # Cache for 1 hour (in seconds)
 
 # Database path
 def get_database_path():
@@ -723,7 +730,31 @@ def get_all_variants():
 
 @app.route('/api/statistics', methods=['GET'])
 def get_statistics():
-    """Returns overall database statistics with NEW significance criteria - OPTIMIZED"""
+    """Returns overall database statistics with NEW significance criteria - CACHED"""
+    global _stats_cache, _stats_cache_time
+    
+    # Check if we should force refresh
+    force_refresh = request.args.get('refresh', 'false').lower() == 'true'
+    
+    # Check if cache is valid
+    current_time = time.time()
+    cache_is_valid = (
+        _stats_cache is not None and 
+        _stats_cache_time is not None and 
+        (current_time - _stats_cache_time) < CACHE_DURATION and
+        not force_refresh
+    )
+    
+    if cache_is_valid:
+        # Return cached data
+        return jsonify({
+            'success': True,
+            'data': _stats_cache,
+            'cached': True,
+            'cache_age_seconds': int(current_time - _stats_cache_time)
+        })
+    
+    # Cache miss or expired - calculate statistics
     conn = get_db_connection()
     
     stats = {}
@@ -738,9 +769,9 @@ def get_statistics():
     
     # Count significant variants using a single optimized query
     # A variant is significant if ANY population meets ALL THREE criteria:
-    # 1. p-value ≤ 0.01
-    # 2. AF ≥ 0.05 in either EUR or that population
-    # 3. FST ≥ 0.15
+    # 1. p-value <= 0.01
+    # 2. AF >= 0.05 in either EUR or that population
+    # 3. FST >= 0.15
     cursor = conn.execute("""
         SELECT COUNT(DISTINCT v.variant_id) as count
         FROM variants v
@@ -788,14 +819,31 @@ def get_statistics():
         'p_threshold': BONFERRONI_P_THRESHOLD,
         'af_threshold': AF_THRESHOLD,
         'fst_threshold': FST_THRESHOLD,
-        'description': 'p ≤ 0.01 (Bonferroni) AND AF ≥ 0.05 (either pop) AND FST ≥ 0.15'
+        'description': 'p <= 0.01 (Bonferroni) AND AF >= 0.05 (either pop) AND FST >= 0.15'
     }
     
     conn.close()
     
+    # Update cache
+    _stats_cache = stats
+    _stats_cache_time = current_time
+    
     return jsonify({
         'success': True,
-        'data': stats
+        'data': stats,
+        'cached': False
+    })
+
+
+@app.route('/api/statistics/clear-cache', methods=['POST'])
+def clear_statistics_cache():
+    """Manually clear the statistics cache"""
+    global _stats_cache, _stats_cache_time
+    _stats_cache = None
+    _stats_cache_time = None
+    return jsonify({
+        'success': True,
+        'message': 'Statistics cache cleared'
     })
 
 

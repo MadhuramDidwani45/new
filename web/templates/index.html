@@ -163,6 +163,71 @@
             margin: 0;
         }
 
+        .variants-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+            font-size: 0.95em;
+        }
+
+        .variants-table th {
+            text-align: left;
+            padding: 12px 15px;
+            background-color: #f8f9fa;
+            border-bottom: 2px solid #e9ecef;
+            color: #495057;
+            font-weight: 600;
+        }
+
+        .variants-table td {
+            padding: 12px 15px;
+            border-bottom: 1px solid #e9ecef;
+            color: #1e293b;
+        }
+
+        .variants-table tr:hover {
+            background-color: #f8f9fa;
+        }
+
+        .variants-toolbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background-color: #f8f9fa;
+            padding: 10px 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            border: 1px solid #e9ecef;
+        }
+
+        .pagination-controls {
+            display: flex;
+            gap: 5px;
+            align-items: center;
+        }
+
+        .pagination-btn {
+            padding: 6px 12px;
+            border: 1px solid #cbd5e1;
+            background: white;
+            border-radius: 6px;
+            margin: 0 2px;
+            cursor: pointer;
+            font-size: 0.9em;
+            transition: all 0.2s;
+        }
+
+        .pagination-btn:hover:not(:disabled) {
+            background: #e2e8f0;
+            border-color: #94a3b8;
+        }
+
+        .pagination-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            background: #f1f5f9;
+        }
+
         .stat-card.clickable {
             cursor: pointer;
         }
@@ -2519,48 +2584,55 @@
                     const pagination = data.pagination;
 
                     let html = `
-                        <div style="margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center;">
-                            <span>Showing ${(pagination.page - 1) * pagination.per_page + 1} - ${Math.min(pagination.page * pagination.per_page, pagination.total_count)} of ${pagination.total_count.toLocaleString()} variants</span>
-                            <div>
-                                <button class="filter-btn" onclick="goToAllVariantsPage(1)" ${!pagination.has_prev ? 'disabled' : ''}>First</button>
-                                <button class="filter-btn" onclick="goToAllVariantsPage(${pagination.page - 1})" ${!pagination.has_prev ? 'disabled' : ''}>Prev</button>
-                                <span style="margin: 0 10px;">Page ${pagination.page} of ${pagination.total_pages.toLocaleString()}</span>
-                                <button class="filter-btn" onclick="goToAllVariantsPage(${pagination.page + 1})" ${!pagination.has_next ? 'disabled' : ''}>Next</button>
-                                <button class="filter-btn" onclick="goToAllVariantsPage(${pagination.total_pages})" ${!pagination.has_next ? 'disabled' : ''}>Last</button>
+                        <div class="variants-toolbar">
+                            <span style="font-weight: 500; color: #64748b;">
+                                Showing <strong>${(pagination.page - 1) * pagination.per_page + 1} - ${Math.min(pagination.page * pagination.per_page, pagination.total_count)}</strong> 
+                                of <strong>${pagination.total_count.toLocaleString()}</strong> variants
+                            </span>
+                            <div class="pagination-controls">
+                                <button class="pagination-btn" onclick="goToAllVariantsPage(1)" ${!pagination.has_prev ? 'disabled' : ''}>First</button>
+                                <button class="pagination-btn" onclick="goToAllVariantsPage(${pagination.page - 1})" ${!pagination.has_prev ? 'disabled' : ''}>Prev</button>
+                                <span style="margin: 0 10px; font-weight: 600; color: #475569;">Page ${pagination.page} of ${pagination.total_pages.toLocaleString()}</span>
+                                <button class="pagination-btn" onclick="goToAllVariantsPage(${pagination.page + 1})" ${!pagination.has_next ? 'disabled' : ''}>Next</button>
+                                <button class="pagination-btn" onclick="goToAllVariantsPage(${pagination.total_pages})" ${!pagination.has_next ? 'disabled' : ''}>Last</button>
                             </div>
                         </div>
-                        <table class="variants-table">
-                            <thead>
-                                <tr>
-                                    <th>RS ID</th>
-                                    <th>Gene</th>
-                                    <th>Location</th>
-                                    <th>Alleles</th>
-                                    <th>Global AF</th>
-                                </tr>
-                            </thead>
-                            <tbody>
+                        <div style="overflow-x: auto;">
+                            <table class="variants-table">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 15%;">RS ID</th>
+                                        <th style="width: 10%;">Gene</th>
+                                        <th style="width: 25%;">Location</th>
+                                        <th style="width: 25%;">Alleles</th>
+                                        <th style="width: 25%;">Global AF</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
                     `;
 
                     for (const v of variants) {
                         html += `
                             <tr style="cursor: pointer;" onclick="viewGene('${v.gene_name}')">
                                 <td>${v.dbsnp_link ? `<a href="${v.dbsnp_link}" target="_blank" onclick="event.stopPropagation()"><strong>${v.rs_id}</strong></a>` : `<strong>${v.rs_id}</strong>`}</td>
-                                <td><span class="badge badge-srns">${v.gene_name}</span></td>
+                                <td><span class="badge badge-srns" style="margin: 0;">${v.gene_name}</span></td>
                                 <td>${v.chrom}:${v.position.toLocaleString()}</td>
                                 <td>${v.ref_allele}/${v.alt_allele}</td>
-                                <td>${v.global_af ? v.global_af.toFixed(4) : 'N/A'}</td>
+                                <td>${v.global_af !== null && v.global_af !== undefined ? v.global_af.toFixed(4) : 'N/A'}</td>
                             </tr>
                         `;
                     }
 
                     html += `
-                            </tbody>
-                        </table>
-                        <div style="margin-top: 15px; text-align: center;">
-                            <button class="filter-btn" onclick="goToAllVariantsPage(${pagination.page - 1})" ${!pagination.has_prev ? 'disabled' : ''}>← Previous</button>
-                            <span style="margin: 0 20px;">Page ${pagination.page} of ${pagination.total_pages.toLocaleString()}</span>
-                            <button class="filter-btn" onclick="goToAllVariantsPage(${pagination.page + 1})" ${!pagination.has_next ? 'disabled' : ''}>Next →</button>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="variants-toolbar" style="margin-top: 15px; justify-content: center;">
+                            <div class="pagination-controls">
+                                <button class="pagination-btn" onclick="goToAllVariantsPage(${pagination.page - 1})" ${!pagination.has_prev ? 'disabled' : ''}>← Previous</button>
+                                <span style="margin: 0 15px; font-weight: 600; color: #475569;">Page ${pagination.page} of ${pagination.total_pages.toLocaleString()}</span>
+                                <button class="pagination-btn" onclick="goToAllVariantsPage(${pagination.page + 1})" ${!pagination.has_next ? 'disabled' : ''}>Next →</button>
+                            </div>
                         </div>
                     `;
 
